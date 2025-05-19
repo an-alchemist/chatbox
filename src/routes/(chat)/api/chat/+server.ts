@@ -13,12 +13,21 @@ import {
 	streamText,
 	type UIMessage
 } from 'ai';
+import { createOpenAI } from '@ai-sdk/openai';
 import { ok, safeTry } from 'neverthrow';
+import { CUSTOM_API_KEY, CUSTOM_API_URL } from '$env/static/private';
 
 export async function POST({ request, locals: { user }, cookies }) {
 	// TODO: zod?
 	const { id, messages }: { id: string; messages: UIMessage[] } = await request.json();
 	const selectedChatModel = cookies.get('selected-model');
+	const selectedCollections = cookies.get('selected-collections') || '';
+	const collectionsArray = selectedCollections ? selectedCollections.split(',').filter(Boolean) : [];
+
+	// Add debugging for model and collections
+	console.log(`DEBUG: selectedChatModel = "${selectedChatModel}"`);
+	console.log(`DEBUG: selectedCollections = "${selectedCollections}"`);
+	console.log(`DEBUG: collectionsArray = ${JSON.stringify(collectionsArray)}`);
 
 	if (!user && !allowAnonymousChats) {
 		error(401, 'Unauthorized');
@@ -69,6 +78,93 @@ export async function POST({ request, locals: { user }, cookies }) {
 		}).orElse(() => error(500, 'An error occurred while processing your request'));
 	}
 
+	// For native model with collections, create a direct custom provider with proper URL
+	if (selectedChatModel === 'native-model' && collectionsArray.length > 0) {
+		// We need to create a custom provider that uses a custom fetch
+		const collectionsParam = collectionsArray.join(',');
+
+		// Make sure not to append a path, just add query parameter to base URL
+		// CUSTOM_API_URL is likely ending with /v1/
+		const baseUrl = CUSTOM_API_URL.endsWith('/') ? CUSTOM_API_URL.slice(0, -1) : CUSTOM_API_URL;
+		console.log(`DEBUG: Base URL: ${baseUrl}`);
+
+		// Create custom fetch function that adds collections parameter to chat/completions endpoint
+		const customFetch = (url, options) => {
+			// Only modify the URL if it ends with /chat/completions
+			if (url.endsWith('/chat/completions')) {
+				const modifiedUrl = `${url}?collections=${collectionsParam}`;
+				console.log(`DEBUG: Original URL: ${url}`);
+				console.log(`DEBUG: Modified URL: ${modifiedUrl}`);
+				return fetch(modifiedUrl, options);
+			}
+			return fetch(url, options);
+		};
+
+		// Create a custom provider that uses our custom fetch
+		const customProvider = createOpenAI({
+			apiKey: CUSTOM_API_KEY,
+			baseURL: baseUrl,
+			fetch: customFetch
+		});
+
+		return createDataStreamResponse({
+			execute: (dataStream) => {
+				const result = streamText({
+					model: customProvider('native'),
+					system: systemPrompt({ selectedChatModel }),
+					messages,
+					maxSteps: 5,
+					experimental_activeTools: [],
+					experimental_transform: smoothStream({ chunking: 'word' }),
+					experimental_generateMessageId: crypto.randomUUID.bind(crypto),
+					onFinish: async ({ response }) => {
+						if (!user) return;
+						const assistantId = getTrailingMessageId({
+							messages: response.messages.filter((message) => message.role === 'assistant')
+						});
+
+						if (!assistantId) {
+							throw new Error('No assistant message found!');
+						}
+
+						const [, assistantMessage] = appendResponseMessages({
+							messages: [userMessage],
+							responseMessages: response.messages
+						});
+
+						await saveMessages({
+							messages: [
+								{
+									id: assistantId,
+									chatId: id,
+									role: assistantMessage.role,
+									parts: assistantMessage.parts,
+									attachments: assistantMessage.experimental_attachments ?? [],
+									createdAt: new Date()
+								}
+							]
+						});
+					},
+					experimental_telemetry: {
+						isEnabled: true,
+						functionId: 'stream-text'
+					}
+				});
+
+				result.consumeStream();
+
+				result.mergeIntoDataStream(dataStream, {
+					sendReasoning: true
+				});
+			},
+			onError: (e) => {
+				console.error('Stream error:', e);
+				return 'Oops!';
+			}
+		});
+	}
+
+	// Standard approach for other models
 	return createDataStreamResponse({
 		execute: (dataStream) => {
 			const result = streamText({
@@ -77,22 +173,8 @@ export async function POST({ request, locals: { user }, cookies }) {
 				messages,
 				maxSteps: 5,
 				experimental_activeTools: [],
-				// TODO
-				// selectedChatModel === 'chat-model-reasoning'
-				// 	? []
-				// 	: ['getWeather', 'createDocument', 'updateDocument', 'requestSuggestions'],
 				experimental_transform: smoothStream({ chunking: 'word' }),
 				experimental_generateMessageId: crypto.randomUUID.bind(crypto),
-				// TODO
-				// tools: {
-				// 	getWeather,
-				// 	createDocument: createDocument({ session, dataStream }),
-				// 	updateDocument: updateDocument({ session, dataStream }),
-				// 	requestSuggestions: requestSuggestions({
-				// 		session,
-				// 		dataStream
-				// 	})
-				// },
 				onFinish: async ({ response }) => {
 					if (!user) return;
 					const assistantId = getTrailingMessageId({
@@ -134,7 +216,7 @@ export async function POST({ request, locals: { user }, cookies }) {
 			});
 		},
 		onError: (e) => {
-			console.error(e);
+			console.error('Stream error:', e);
 			return 'Oops!';
 		}
 	});

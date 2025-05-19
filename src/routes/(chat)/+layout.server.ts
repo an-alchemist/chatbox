@@ -1,5 +1,5 @@
 import { chatModels, DEFAULT_CHAT_MODEL } from '$lib/ai/models';
-import { SelectedModel } from '$lib/hooks/selected-model.svelte.js';
+import { COLLECTIONS } from '$env/static/private'; // Add this line
 
 export async function load({ cookies, locals }) {
 	const { user } = locals;
@@ -16,9 +16,23 @@ export async function load({ cookies, locals }) {
 		});
 	}
 
+	// Initialize selected collections cookie if it doesn't exist
+	let selectedCollections = cookies.get('selected-collections');
+	if (selectedCollections === undefined) {
+		selectedCollections = '';
+		cookies.set('selected-collections', selectedCollections || '', {
+			path: '/',
+			expires: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30),
+			httpOnly: true,
+			sameSite: 'lax'
+		});
+	}
+
 	return {
 		user,
 		sidebarCollapsed,
-		selectedChatModel: new SelectedModel(modelId)
+		selectedChatModel: modelId,
+		selectedCollections: selectedCollections || '',
+		collections: (COLLECTIONS || '').split(',').filter(Boolean) // Add this line
 	};
 }

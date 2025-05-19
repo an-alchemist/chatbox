@@ -14,12 +14,14 @@
 		user,
 		chat,
 		readonly,
-		initialMessages
+		initialMessages,
+		collections = [] // Add this prop with a default value
 	}: {
 		user: User | undefined;
 		chat: DbChat | undefined;
 		initialMessages: UIMessage[];
 		readonly: boolean;
+		collections?: string[]; // Add this type
 	} = $props();
 
 	const chatHistory = ChatHistory.fromContext();
@@ -60,35 +62,17 @@
 	let attachments = $state<Attachment[]>([]);
 </script>
 
-<div class="flex h-dvh min-w-0 flex-col bg-background">
-	<ChatHeader {user} {chat} {readonly} />
+<div class="bg-background flex h-dvh min-w-0 flex-col">
+	<ChatHeader {user} {chat} {readonly} {collections} />
 	<Messages
 		{readonly}
 		loading={chatClient.status === 'streaming' || chatClient.status === 'submitted'}
 		messages={chatClient.messages}
 	/>
 
-	<form class="mx-auto flex w-full gap-2 bg-background px-4 pb-4 md:max-w-3xl md:pb-6">
+	<form class="bg-background mx-auto flex w-full gap-2 px-4 pb-4 md:max-w-3xl md:pb-6">
 		{#if !readonly}
 			<MultimodalInput {attachments} {user} {chatClient} class="flex-1" />
 		{/if}
 	</form>
 </div>
-
-<!-- TODO -->
-<!-- <Artifact
-	chatId={id}
-	{input}
-	{setInput}
-	{handleSubmit}
-	{isLoading}
-	{stop}
-	{attachments}
-	{setAttachments}
-	{append}
-	{messages}
-	{setMessages}
-	{reload}
-	{votes}
-	{readonly}
-/> -->

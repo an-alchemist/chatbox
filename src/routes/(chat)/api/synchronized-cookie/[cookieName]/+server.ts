@@ -15,6 +15,9 @@ export async function POST({ params, cookies, request }) {
 				});
 			}
 			break;
+		case 'selected-collections':
+			// No validation needed for collections
+			break;
 		default: {
 			return new Response('Unknown cookie', {
 				status: 404

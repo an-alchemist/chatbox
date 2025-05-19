@@ -10,5 +10,5 @@
 	initialMessages={convertToUIMessages(data.messages)}
 	readonly={data.user?.id !== data.chat.userId}
 	user={data.user}
+	collections={data.collections}
 />
-<!-- TODO <DataStreamHandler {id} /> -->
