@@ -17,6 +17,9 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { ok, safeTry } from 'neverthrow';
 import { CUSTOM_API_KEY, CUSTOM_API_URL } from '$env/static/private';
 
+// Get custom models from environment variable for checking
+const CUSTOM_MODELS = process.env.PUBLIC_CUSTOM_MODELS?.split(',').filter(Boolean) || ['native'];
+
 export async function POST({ request, locals: { user }, cookies }) {
 	// TODO: zod?
 	const { id, messages }: { id: string; messages: UIMessage[] } = await request.json();
@@ -78,13 +81,15 @@ export async function POST({ request, locals: { user }, cookies }) {
 		}).orElse(() => error(500, 'An error occurred while processing your request'));
 	}
 
-	// For native model with collections, create a direct custom provider with proper URL
-	if (selectedChatModel === 'native-model' && collectionsArray.length > 0) {
+	// Check if the selected model is one of our custom models
+	const isCustomModel = CUSTOM_MODELS.includes(selectedChatModel);
+
+	// For custom models with collections, create a direct custom provider with proper URL
+	if (isCustomModel && collectionsArray.length > 0) {
 		// We need to create a custom provider that uses a custom fetch
 		const collectionsParam = collectionsArray.join(',');
 
 		// Make sure not to append a path, just add query parameter to base URL
-		// CUSTOM_API_URL is likely ending with /v1/
 		const baseUrl = CUSTOM_API_URL.endsWith('/') ? CUSTOM_API_URL.slice(0, -1) : CUSTOM_API_URL;
 		console.log(`DEBUG: Base URL: ${baseUrl}`);
 
@@ -110,7 +115,73 @@ export async function POST({ request, locals: { user }, cookies }) {
 		return createDataStreamResponse({
 			execute: (dataStream) => {
 				const result = streamText({
-					model: customProvider('native'),
+					// Use the selected model name directly
+					model: customProvider(selectedChatModel),
+					system: systemPrompt({ selectedChatModel }),
+					messages,
+					maxSteps: 5,
+					experimental_activeTools: [],
+					experimental_transform: smoothStream({ chunking: 'word' }),
+					experimental_generateMessageId: crypto.randomUUID.bind(crypto),
+					onFinish: async ({ response }) => {
+						if (!user) return;
+						const assistantId = getTrailingMessageId({
+							messages: response.messages.filter((message) => message.role === 'assistant')
+						});
+
+						if (!assistantId) {
+							throw new Error('No assistant message found!');
+						}
+
+						const [, assistantMessage] = appendResponseMessages({
+							messages: [userMessage],
+							responseMessages: response.messages
+						});
+
+						await saveMessages({
+							messages: [
+								{
+									id: assistantId,
+									chatId: id,
+									role: assistantMessage.role,
+									parts: assistantMessage.parts,
+									attachments: assistantMessage.experimental_attachments ?? [],
+									createdAt: new Date()
+								}
+							]
+						});
+					},
+					experimental_telemetry: {
+						isEnabled: true,
+						functionId: 'stream-text'
+					}
+				});
+
+				result.consumeStream();
+
+				result.mergeIntoDataStream(dataStream, {
+					sendReasoning: true
+				});
+			},
+			onError: (e) => {
+				console.error('Stream error:', e);
+				return 'Oops!';
+			}
+		});
+	} else if (isCustomModel) {
+		// For custom models without collections
+		// Create a custom provider without modifying the URL
+		const baseUrl = CUSTOM_API_URL.endsWith('/') ? CUSTOM_API_URL.slice(0, -1) : CUSTOM_API_URL;
+		const customProvider = createOpenAI({
+			apiKey: CUSTOM_API_KEY,
+			baseURL: baseUrl
+		});
+
+		return createDataStreamResponse({
+			execute: (dataStream) => {
+				const result = streamText({
+					// Use the selected model name directly
+					model: customProvider(selectedChatModel),
 					system: systemPrompt({ selectedChatModel }),
 					messages,
 					maxSteps: 5,
@@ -221,7 +292,6 @@ export async function POST({ request, locals: { user }, cookies }) {
 		}
 	});
 }
-
 export async function DELETE({ locals: { user }, request }) {
 	// TODO: zod
 	const { id }: { id: string } = await request.json();
